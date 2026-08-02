@@ -455,7 +455,8 @@ function renderDetail(){
   // scale box
   if(main){
     const scaleBox = el('div', {class:'scale-box'});
-    scaleBox.appendChild(el('div', {class:'ratio-stamp', text:'1.0×', attrs:{id:'ratio-stamp'}}));
+    const ratioStampEl = el('div', {class:'ratio-stamp', text:'1.0×'});
+    scaleBox.appendChild(ratioStampEl);
     scaleBox.appendChild(el('label', {text:'มี "' + main.name + '" อยู่เท่าไหร่ (' + (main.unit||'หน่วย') + ')'}));
     const row = el('div', {class:'row'});
     const scaleInput = el('input', {attrs:{type:'number', step:'any', value:main.amount}});
@@ -479,7 +480,7 @@ function renderDetail(){
     function updateRatio(){
       const val = parseFloat(scaleInput.value) || 0;
       const ratio = main.amount>0 ? (val/main.amount) : 1;
-      document.getElementById('ratio-stamp').textContent = (Math.round(ratio*100)/100) + '×';
+      ratioStampEl.textContent = (Math.round(ratio*100)/100) + '×';
       renderIngView(ratio);
     }
     scaleInput.addEventListener('input', updateRatio);
