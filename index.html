@@ -185,6 +185,29 @@
   .section-title{ font-size:13px; font-weight:700; color:var(--ink-soft); text-transform:uppercase; letter-spacing:1px; margin:22px 0 8px; display:flex; align-items:center; gap:8px; }
   .section-title:first-of-type{ margin-top:6px; }
   .section-title::after{ content:""; flex:1; height:1px; background:var(--line); }
+
+  .pill-row{ display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .pill{
+    display:inline-block; font-size:11.5px; font-weight:500;
+    background:rgba(169,134,47,0.14); color:var(--rust-dark);
+    border:1px solid var(--line); border-radius:20px;
+    padding:3px 10px;
+  }
+
+  .filter-row{ display:flex; gap:8px; margin-bottom:16px; }
+  .filter-row select{ flex:1; font-size:13px; padding:9px 10px; }
+
+  .checkbox-list{ display:flex; flex-direction:column; gap:2px; }
+  .checkbox-item{
+    display:flex !important; align-items:center; gap:10px;
+    font-size:15px; font-weight:400 !important; color:var(--ink) !important;
+    text-transform:none; letter-spacing:0; margin:0 !important;
+    padding:8px 2px; cursor:pointer;
+  }
+  .checkbox-item input[type=checkbox]{ width:19px; height:19px; accent-color:var(--moss); flex-shrink:0; }
+
+  .bulk-preview-card{ padding:10px 14px; }
+  .bulk-preview-card .checkbox-item{ padding:2px; }
 </style>
 </head>
 <body>
@@ -211,21 +234,33 @@ function saveRecipes(list){
 }
 function uid(){ return 'r' + Date.now() + Math.random().toString(16).slice(2,8); }
 
-let state = { view:'list', recipeId:null, draft:null };
+let state = { view:'list', recipeId:null, draft:null, filterCuisine:'', filterProtein:'', bulkPreview:null };
 
 // ---------- Parsing ----------
 const FRACTION_MAP = { '¼':0.25, '½':0.5, '¾':0.75, '⅓':1/3, '⅔':2/3, '⅛':0.125, '⅜':0.375, '⅝':0.625, '⅞':0.875 };
 const QTY_CHARS = '0-9¼½¾⅓⅔⅛⅜⅝⅞';
 const hasQty = (line) => new RegExp('[' + QTY_CHARS + ']').test(line);
 
+function parseAmount(raw){
+  if(raw===undefined || raw===null) return 0;
+  raw = (''+raw).trim();
+  if(raw==='') return 0;
+  if(FRACTION_MAP[raw] !== undefined) return FRACTION_MAP[raw];
+  let m = raw.match(/^([0-9]+)\s+([0-9]+)\/([0-9]+)$/); // เศษส่วนปนจำนวนเต็ม เช่น "1 1/2"
+  if(m) return parseFloat(m[1]) + (parseFloat(m[2])/parseFloat(m[3]));
+  m = raw.match(/^([0-9]+)\/([0-9]+)$/); // เศษส่วนธรรมดา เช่น "1/2"
+  if(m) return parseFloat(m[1])/parseFloat(m[2]);
+  const f = parseFloat(raw.replace(',', '.'));
+  return isNaN(f) ? 0 : f;
+}
+
 function splitLineQty(line){
-  // แยกบรรทัดออกเป็น [ส่วนชื่อ, จำนวน, หน่วย] โดยจับตัวเลข/เศษส่วนตัวแรกที่เจอ
-  const m = line.match(/^(.*?)\s*([0-9]+(?:[.,][0-9]+)?|¼|½|¾|⅓|⅔|⅛|⅜|⅝|⅞)\s*(.*)$/);
+  // แยกบรรทัดออกเป็น [ส่วนชื่อ, จำนวน, หน่วย] โดยจับตัวเลข/เศษส่วนตัวแรกที่เจอ (รองรับ 1/2, 1 1/2, ½ ฯลฯ)
+  const m = line.match(/^(.*?)\s*([0-9]+\s+[0-9]+\/[0-9]+|[0-9]+\/[0-9]+|[0-9]+(?:[.,][0-9]+)?|¼|½|¾|⅓|⅔|⅛|⅜|⅝|⅞)\s*(.*)$/);
   if(!m) return { namePart:'', amount:0, unit:'' };
   const namePart = m[1].trim();
-  const amtRaw = m[2];
   const unit = m[3].trim();
-  const amount = FRACTION_MAP[amtRaw] !== undefined ? FRACTION_MAP[amtRaw] : (parseFloat(amtRaw.replace(',', '.')) || 0);
+  const amount = parseAmount(m[2]);
   return { namePart, amount, unit };
 }
 
@@ -242,7 +277,7 @@ function parseIngredientText(text){
       const name = parts[0] || '';
       const amountRaw = parts[1] !== undefined ? parts[1] : '';
       const unit = parts[2] !== undefined ? parts[2] : '';
-      const amount = FRACTION_MAP[amountRaw] !== undefined ? FRACTION_MAP[amountRaw] : (parseFloat((amountRaw+'').replace(',', '.')) || 0);
+      const amount = parseAmount(amountRaw);
       if(name) results.push({ name, amount, unit });
       return;
     }
@@ -272,6 +307,43 @@ function parseIngredientText(text){
   return results.filter(i=> i.name !== '');
 }
 
+// ---------- นำเข้าหลายสูตรพร้อมกัน (จาก Google Sheet คอลัมน์ MENU / INGREDIENT / AMOUNT / UNIT / HOW TO) ----------
+function parseBulkSheet(text){
+  const rawLines = text.split('\n').map(l=>l.replace(/\r$/,'')).filter(l=>l.trim()!=='');
+  const recipes = [];
+  let current = null;
+
+  rawLines.forEach(line=>{
+    if(!line.includes('\t')) return; // ข้ามบรรทัดที่ไม่มี tab คั่น (ไม่ใช่แถวตารางจาก Sheet)
+    const cols = line.split('\t').map(c=>c.trim());
+    const menu = cols[0] || '';
+    const ingName = cols[1] || '';
+    const amtRaw = cols[2] || '';
+    const unit = cols[3] || '';
+    const howTo = cols[5] || '';
+
+    if(/^(menu|เมนู)$/i.test(menu) && /^(ingredient|วัตถุดิบ)$/i.test(ingName)) return; // ข้ามแถวหัวตาราง
+
+    if(menu){
+      current = { name: menu, ingredients:[], mainIndex:0, instructions:'', cuisine:'', proteins:[] };
+      recipes.push(current);
+    }
+    if(!current) return;
+
+    if(ingName){
+      current.ingredients.push({ name: ingName, amount: parseAmount(amtRaw), unit });
+    }
+    if(howTo){
+      current.instructions = current.instructions ? (current.instructions + '\n' + howTo) : howTo;
+    }
+  });
+
+  return recipes.filter(r=> r.ingredients.length>0);
+}
+
+const CUISINE_OPTIONS = ['ไทย','จีน','ญี่ปุ่น','เกาหลี','อินเดีย','ตะวันตก/เบเกอรี่','อื่นๆ'];
+const PROTEIN_OPTIONS = ['หมู','เนื้อวัว','ไก่/สัตว์ปีก','อาหารทะเล','ไม่มีเนื้อสัตว์'];
+
 // ---------- Rendering ----------
 function render(){
   const app = document.getElementById('app');
@@ -279,6 +351,7 @@ function render(){
   if(state.view==='list') app.appendChild(renderList());
   else if(state.view==='form') app.appendChild(renderForm());
   else if(state.view==='detail') app.appendChild(renderDetail());
+  else if(state.view==='bulk') app.appendChild(renderBulk());
 }
 
 function el(tag, opts={}, children=[]){
@@ -294,16 +367,20 @@ function el(tag, opts={}, children=[]){
 
 function renderList(){
   const wrap = el('div');
-  const recipes = loadRecipes().sort((a,b)=> b.createdAt - a.createdAt);
+  const allRecipes = loadRecipes().sort((a,b)=> b.createdAt - a.createdAt);
 
   wrap.appendChild(el('div', {class:'fab-row'}, [
     el('button', {class:'btn block', text:'+ จดสูตรใหม่', on:{click:()=>{
-      state.draft = { id:null, name:'', ingredients:[], mainIndex:0, instructions:'' };
+      state.draft = { id:null, name:'', ingredients:[], mainIndex:0, instructions:'', cuisine:'', proteins:[] };
       state.view='form'; render();
+    }}}),
+    el('button', {class:'btn ghost block', text:'นำเข้าหลายสูตรจาก Google Sheet', attrs:{style:'margin-top:8px;'}, on:{click:()=>{
+      state.bulkPreview = null;
+      state.view='bulk'; render();
     }}})
   ]));
 
-  if(recipes.length===0){
+  if(allRecipes.length===0){
     wrap.appendChild(el('div', {class:'empty'}, [
       el('div', {class:'display', text:'ยังไม่มีสูตรอาหารในสมุดเล่มนี้'}),
       el('div', {text:'เริ่มจดสูตรแรกกันเลยค่ะ กดปุ่ม "+ จดสูตรใหม่" ด้านบน'})
@@ -311,13 +388,50 @@ function renderList(){
     return wrap;
   }
 
+  const hasTags = allRecipes.some(r=> r.cuisine || (r.proteins && r.proteins.length));
+  if(hasTags){
+    const filterRow = el('div', {class:'filter-row'});
+    const cuisineSel = el('select', {});
+    cuisineSel.appendChild(el('option', {text:'ทุกประเภทอาหาร', attrs:{value:''}}));
+    CUISINE_OPTIONS.forEach(c=> cuisineSel.appendChild(el('option', {text:c, attrs:{value:c}})));
+    cuisineSel.value = state.filterCuisine;
+    cuisineSel.addEventListener('change', e=>{ state.filterCuisine = e.target.value; render(); });
+
+    const proteinSel = el('select', {});
+    proteinSel.appendChild(el('option', {text:'ทุกเนื้อสัตว์', attrs:{value:''}}));
+    PROTEIN_OPTIONS.forEach(p=> proteinSel.appendChild(el('option', {text:p, attrs:{value:p}})));
+    proteinSel.value = state.filterProtein;
+    proteinSel.addEventListener('change', e=>{ state.filterProtein = e.target.value; render(); });
+
+    filterRow.appendChild(cuisineSel);
+    filterRow.appendChild(proteinSel);
+    wrap.appendChild(filterRow);
+  }
+
+  const recipes = allRecipes.filter(r=>
+    (!state.filterCuisine || r.cuisine===state.filterCuisine) &&
+    (!state.filterProtein || (r.proteins||[]).includes(state.filterProtein))
+  );
+
+  if(recipes.length===0){
+    wrap.appendChild(el('div', {class:'empty'}, [
+      el('div', {text:'ไม่มีสูตรที่ตรงกับตัวกรองนี้ค่ะ'})
+    ]));
+    return wrap;
+  }
+
   recipes.forEach(r=>{
     const main = r.ingredients[r.mainIndex];
+    const tagPills = el('div', {class:'pill-row'});
+    if(r.cuisine) tagPills.appendChild(el('span', {class:'pill', text:r.cuisine}));
+    (r.proteins||[]).forEach(p=> tagPills.appendChild(el('span', {class:'pill', text:p})));
+
     const card = el('div', {class:'card recipe-card', on:{click:()=>{
       state.recipeId = r.id; state.view='detail'; render();
     }}}, [
       el('h3', {text:r.name || '(ไม่มีชื่อเมนู)'}),
       main ? el('span', {class:'tag', text:'วัตถุดิบหลัก: ' + main.name} ) : null,
+      (r.cuisine || (r.proteins||[]).length) ? tagPills : null,
       el('div', {class:'meta', text: r.ingredients.length + ' วัตถุดิบ'})
     ]);
     wrap.appendChild(card);
@@ -336,6 +450,27 @@ function renderForm(){
   wrap.appendChild(el('label', {text:'ชื่อเมนู'}));
   const nameInput = el('input', {attrs:{type:'text', placeholder:'เช่น ไก่ใต้น้ำ', value:d.name||''}});
   wrap.appendChild(nameInput);
+
+  wrap.appendChild(el('div', {class:'section-title', text:'หมวดหมู่'}));
+  wrap.appendChild(el('label', {text:'ประเภทอาหาร'}));
+  const cuisineSelect = el('select', {});
+  cuisineSelect.appendChild(el('option', {text:'ไม่ระบุ', attrs:{value:''}}));
+  CUISINE_OPTIONS.forEach(c=> cuisineSelect.appendChild(el('option', {text:c, attrs:{value:c}})));
+  cuisineSelect.value = d.cuisine || '';
+  wrap.appendChild(cuisineSelect);
+
+  wrap.appendChild(el('label', {text:'เนื้อสัตว์หลัก (เลือกได้หลายอย่าง)'}));
+  const proteinBox = el('div', {class:'checkbox-list'});
+  const proteinChecks = {};
+  const selectedProteins = new Set(d.proteins || []);
+  PROTEIN_OPTIONS.forEach(p=>{
+    const cb = el('input', {attrs:{type:'checkbox'}});
+    cb.checked = selectedProteins.has(p);
+    proteinChecks[p] = cb;
+    const lbl = el('label', {class:'checkbox-item'}, [cb, el('span', {text:p})]);
+    proteinBox.appendChild(lbl);
+  });
+  wrap.appendChild(proteinBox);
 
   wrap.appendChild(el('div', {class:'section-title', text:'วัตถุดิบ'}));
 
@@ -415,13 +550,15 @@ function renderForm(){
     const name = nameInput.value.trim();
     if(!name){ alert('ใส่ชื่อเมนูก่อนนะคะ'); return; }
     if(ingredients.length===0){ alert('เพิ่มวัตถุดิบอย่างน้อย 1 อย่างก่อนนะคะ'); return; }
+    const cuisine = cuisineSelect.value;
+    const proteins = PROTEIN_OPTIONS.filter(p=> proteinChecks[p].checked);
     const recipes = loadRecipes();
     if(isEdit){
       const idx = recipes.findIndex(r=>r.id===d.id);
-      recipes[idx] = { ...recipes[idx], name, ingredients, mainIndex, instructions: stepsInput.value };
+      recipes[idx] = { ...recipes[idx], name, ingredients, mainIndex, instructions: stepsInput.value, cuisine, proteins };
       state.recipeId = d.id;
     } else {
-      const newRecipe = { id:uid(), name, ingredients, mainIndex, instructions: stepsInput.value, createdAt: Date.now() };
+      const newRecipe = { id:uid(), name, ingredients, mainIndex, instructions: stepsInput.value, cuisine, proteins, createdAt: Date.now() };
       recipes.push(newRecipe);
       state.recipeId = newRecipe.id;
     }
@@ -449,6 +586,13 @@ function renderDetail(){
 
   wrap.appendChild(el('div', {class:'backlink', text:'← กลับสมุดสูตร', on:{click:()=>{ state.view='list'; render(); }}}));
   wrap.appendChild(el('h2', {class:'display', text:r.name}));
+
+  if(r.cuisine || (r.proteins||[]).length){
+    const tagPills = el('div', {class:'pill-row', attrs:{style:'margin-top:8px;'}});
+    if(r.cuisine) tagPills.appendChild(el('span', {class:'pill', text:r.cuisine}));
+    (r.proteins||[]).forEach(p=> tagPills.appendChild(el('span', {class:'pill', text:p})));
+    wrap.appendChild(tagPills);
+  }
 
   const main = r.ingredients[r.mainIndex];
 
@@ -534,7 +678,7 @@ function renderDetail(){
   const btnRow = el('div', {class:'row-btns'});
   const editRecipeBtn = el('button', {class:'btn secondary', text:'แก้ไขสูตร'});
   editRecipeBtn.addEventListener('click', ()=>{
-    state.draft = { id:r.id, name:r.name, ingredients:r.ingredients, mainIndex:r.mainIndex, instructions:r.instructions };
+    state.draft = { id:r.id, name:r.name, ingredients:r.ingredients, mainIndex:r.mainIndex, instructions:r.instructions, cuisine:r.cuisine||'', proteins:r.proteins||[] };
     state.view='form'; render();
   });
   const delBtn = el('button', {class:'btn danger', text:'ลบสูตรนี้'});
@@ -548,6 +692,72 @@ function renderDetail(){
   btnRow.appendChild(editRecipeBtn);
   btnRow.appendChild(delBtn);
   wrap.appendChild(btnRow);
+
+  return wrap;
+}
+
+function renderBulk(){
+  const wrap = el('div');
+  wrap.appendChild(el('div', {class:'backlink', text:'← กลับสมุดสูตร', on:{click:()=>{ state.view='list'; render(); }}}));
+  wrap.appendChild(el('h2', {class:'display', text:'นำเข้าหลายสูตรพร้อมกัน'}));
+  wrap.appendChild(el('div', {class:'hint', text:'ใช้สำหรับวางข้อมูลจาก Google Sheet ที่มีคอลัมน์ MENU / INGREDIENT / AMOUNT / UNIT (และ HOW TO ถ้ามี) คัดลอกได้หลายเมนูพร้อมกันในครั้งเดียว — แถวไหนที่ช่อง MENU ว่าง ระบบจะเข้าใจว่าเป็นวัตถุดิบต่อของเมนูก่อนหน้า'}));
+
+  if(!state.bulkPreview){
+    const pasteBox = el('textarea', {class:'paste-box', attrs:{style:'min-height:200px;', placeholder:'วางข้อมูลจาก Google Sheet ตรงนี้ (คัดลอกทั้งช่วงรวมหลายเมนู)\n\nตัวอย่าง:\nพริกแกงส้มไทย\tพริกแห้งเม็ดใหญ่\t12\tเม็ด\n\tกระเทียม\t10\tกรัม\nกุ้งอบวุ้นเส้น\tน้ำเปล่า\t1\tถ้วยตวง'}});
+    wrap.appendChild(pasteBox);
+
+    const parseBtn = el('button', {class:'btn block', text:'แยกเป็นสูตร', attrs:{style:'margin-top:14px;'}});
+    parseBtn.addEventListener('click', ()=>{
+      const parsed = parseBulkSheet(pasteBox.value);
+      if(parsed.length===0){ alert('ไม่พบข้อมูลที่แยกเป็นสูตรได้เลยค่ะ ลองเช็คว่าคัดลอกมาจาก Google Sheet แบบมี tab คั่นคอลัมน์หรือเปล่านะคะ'); return; }
+      state.bulkPreview = parsed.map(r=> ({ ...r, include:true }));
+      render();
+    });
+    wrap.appendChild(parseBtn);
+    return wrap;
+  }
+
+  wrap.appendChild(el('div', {class:'section-title', text: 'พบ ' + state.bulkPreview.length + ' สูตร — เลือกสูตรที่จะนำเข้า'}));
+
+  state.bulkPreview.forEach((r, idx)=>{
+    const cb = el('input', {attrs:{type:'checkbox'}});
+    cb.checked = r.include;
+    cb.addEventListener('change', e=>{ r.include = e.target.checked; });
+    const card = el('div', {class:'card bulk-preview-card'}, [
+      el('label', {class:'checkbox-item'}, [
+        cb,
+        el('div', {}, [
+          el('div', {attrs:{style:'font-weight:600;'}, text:r.name}),
+          el('div', {class:'meta', text: r.ingredients.length + ' วัตถุดิบ'})
+        ])
+      ])
+    ]);
+    wrap.appendChild(card);
+  });
+
+  wrap.appendChild(el('div', {class:'hint', text:'นำเข้าแล้วยังไม่มีการเลือก "วัตถุดิบหลัก" กับหมวดหมู่ให้นะคะ ต้องเข้าไปกดแก้ไขสูตรทีละอันเพื่อตั้งค่าเพิ่มเติมทีหลัง'}));
+
+  const importBtn = el('button', {class:'btn block', text:'นำเข้าสูตรที่เลือก', attrs:{style:'margin-top:8px;'}});
+  importBtn.addEventListener('click', ()=>{
+    const toImport = state.bulkPreview.filter(r=>r.include);
+    if(toImport.length===0){ alert('ยังไม่ได้เลือกสูตรที่จะนำเข้าเลยค่ะ'); return; }
+    const recipes = loadRecipes();
+    toImport.forEach(r=>{
+      recipes.push({
+        id: uid(), name: r.name, ingredients: r.ingredients, mainIndex: 0,
+        instructions: r.instructions || '', cuisine:'', proteins:[], createdAt: Date.now()
+      });
+    });
+    saveRecipes(recipes);
+    state.bulkPreview = null;
+    state.view = 'list';
+    render();
+  });
+  wrap.appendChild(importBtn);
+
+  const cancelBtn = el('button', {class:'btn ghost block', text:'วางข้อความใหม่', attrs:{style:'margin-top:8px;'}});
+  cancelBtn.addEventListener('click', ()=>{ state.bulkPreview = null; render(); });
+  wrap.appendChild(cancelBtn);
 
   return wrap;
 }
