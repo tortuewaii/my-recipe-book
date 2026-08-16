@@ -158,9 +158,9 @@
   .scale-box label{ color:var(--ink-soft); }
   .scale-box .row{ display:flex; align-items:center; gap:10px; }
   .ratio-stamp{
-    position:absolute; top:12px; right:16px;
     font-family:'Pacifico', cursive; font-weight:400;
-    font-size:32px; color:var(--blue-mid-dark);
+    font-size:30px; color:var(--blue-mid-dark);
+    text-align:right; margin:2px 0 8px;
   }
 
   .ing-view-row{ display:flex; justify-content:space-between; padding:10px 8px; border-bottom:1px dashed var(--line); font-size:15px; cursor:pointer; border-radius:6px; }
@@ -800,8 +800,8 @@ function renderDetail(){
     if(!main){ buildIngList(1); return; }
     const scaleBox = el('div', {class:'scale-box'});
     const ratioStampEl = el('div', {class:'ratio-stamp', text:'1.0×'});
-    scaleBox.appendChild(ratioStampEl);
     scaleBox.appendChild(el('label', {text:'How much "' + main.name + '" do you have? (' + (main.unit||'unit') + ')'}));
+    scaleBox.appendChild(ratioStampEl);
     const row = el('div', {class:'row'});
     const scaleInput = el('input', {attrs:{type:'number', step:'any', value:main.amount}});
     row.appendChild(scaleInput);
